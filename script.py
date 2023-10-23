@@ -1,60 +1,80 @@
-import pymongo
-import sys
 import json
+import pandas as pd
+from sqlalchemy import create_engine, types as sqlalchemy_types
+
+from utils import (
+  CustomDict,
+  dict_fields_with_levels,
+  dict_depth,
+  sub_fields_depth,
+)
 
 
-# Authenticate to remote MongoDB server
-try:
-  client = pymongo.MongoClient(
-    "mongodb+srv://josephsha3ban:NbUVQq9QxNXYe02Q@cluster0.7qwnixv.mongodb.net/")
-  
-# return a friendly error if a URI error is thrown 
-except pymongo.errors.ConfigurationError:
-  print(
-    "An Invalid URI host error was received. Is your"
-    " Atlas host name correct in your connection string?"
-    )
-  sys.exit(1)
+fn = r'data.json'
 
-# use a database named "myDatabase"
-db = client.myDatabase
+with open(fn, encoding="UTF-8") as f:
+  data = json.load(f)
 
-# use a collection named "flats"
-my_collection = db["flats"]
+data = CustomDict(data)
 
-# Load Fam Properties data from json file
-with open('data.json', 'r', encoding='utf8') as f:
-    flat_documents = json.load(f)
+# Collects some info about Data
+print("Depth of data obj:", data.depth)
+print("Depth of properties obj:", dict_depth(data['properties']))
 
-# drop the collection in case it already exists
-try:
-  my_collection.drop()  
+obj_fields, arr_fields = dict_fields_with_levels(data['properties'])
+print(f"Objects fields: {obj_fields}")
+print(f"Array fields: {arr_fields}")
+sub_fields_depth(data, obj_fields, prefix='object')
+sub_fields_depth(data, arr_fields, prefix='array')
 
-# return a friendly error if an authentication error is thrown
-except pymongo.errors.OperationFailure:
-  print(
-    "An authentication error was received. Are your username"
-     " and password correct in your connection string?"
-    )
-  sys.exit(1)
+# The length of all data is: 25
+# data['properties'][index]["live_viewing"] all the values are None
+# price are: nested objects
+df = pd.DataFrame(data['properties'])
+v = df.drop(arr_fields, axis=1)
 
-# INSERT DOCUMENTS
-#
-# You can insert individual documents using collection.insert_one().
-# In this example, we're going to create four documents and then 
-# insert them all with insert_many().
-try: 
- result = my_collection.insert_many(flat_documents)
+# some of your records seem NOT to have `Tags` key, hence `KeyError: 'Tags'`
+# let's fix it
+# price_keys = set()
+# price_key_types = list()
+# for r in data['properties']:
+#   price_keys.update(r['price'].keys())
 
-# return a friendly error if the operation fails
-except pymongo.errors.OperationFailure:
-  print(
-    "An authentication error was received. Are you sure your"
-    "database user is authorized to perform write operations?"
-    )
-  sys.exit(1)
-else:
-  inserted_count = len(result.inserted_ids)
-  print("I inserted %x documents." %(inserted_count))
+# for val in data['properties'][1]['price'].values():
+#   price_key_types.append(val)
 
-  print("\n")
+# print(price_keys, price_key_types)
+# for r in data['properties']:
+#     for price_key in price_keys:
+#         if price_key in r['price']:
+#             print(r['price'][price_key])
+
+price = pd.json_normalize(data['properties'], record_path='images')
+# Normalize dropped fields to be converted to a new table
+normalized_fields = {}
+for field in arr_fields:
+  normalized_fields[field] = pd.json_normalize(
+    data['properties'],field, ['id'], meta_prefix='parent_')
+
+# con = sqlite3.connect("db.sqlite")
+PG_USER = "postgres"
+PG_PASS = "admin"
+PG_HOST = "localhost"
+PG_PORT = "5432"
+PG_DB_NAME = "fam"
+PG_CLIENT_ENCODING = "utf8"
+eng = create_engine(
+    f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB_NAME}",
+    use_native_hstore=False, #isolation_level="REPEATABLE READ"
+)
+v.to_sql(
+  'properties', con=eng, if_exists='replace', index=True,
+  dtype={field: sqlalchemy_types.JSON for field in obj_fields})
+
+for normalized_field_name, normalized_field_val in normalized_fields.items():
+  normalized_field_val.to_sql(
+    normalized_field_name, con=eng, if_exists='replace', index=True)
+
+print()
+print("===========================================================")
+print("All records has inserted in the corresponding tables. DONE!")

@@ -1,1 +1,12 @@
+# virtual envs
 venv/
+.venv/
+
+# vscode caches
+.vscode/
+
+# sqlite files
+*.sqlite
+
+# python cache
+__pycache__
